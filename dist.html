@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>内容分发</title>
+  <link rel="stylesheet" href="dist.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>内容分发</h1>
+      <p>上传文档文件，自动提取标题、封面和正文，并同步到多平台。</p>
+    </header>
+
+    <main class="main">
+      <section class="composer">
+        <div class="upload-panel">
+          <label>文档上传</label>
+          <div class="upload-actions">
+            <input type="file" id="doc-file-input" accept=".md,.markdown,.txt,.html,.htm,.docx" hidden />
+            <button type="button" class="btn" id="btn-pick-doc">选择文档</button>
+            <span class="upload-tip">支持 .md .txt .html .docx（可拖拽文件到下方区域）</span>
+          </div>
+          <div class="drop-zone" id="drop-zone">
+            <div>拖拽文档文件到这里</div>
+            <div class="drop-sub">或点击“选择文档”</div>
+          </div>
+          <div class="file-meta" id="file-meta"></div>
+          <textarea id="source-preview" placeholder="文档内容预览" readonly></textarea>
+        </div>
+
+        <div class="editor-panel">
+          <div class="meta-row">
+            <div class="meta-group">
+              <label for="title">标题</label>
+              <input type="text" id="title" placeholder="文档标题" />
+            </div>
+            <div class="meta-group cover-wrap">
+              <label>封面</label>
+              <img id="cover-preview" class="cover-preview" alt="封面" src="" style="display: none;" />
+              <input type="text" id="cover-url" placeholder="封面图 URL（可选）" style="margin-top: 6px;" />
+            </div>
+          </div>
+
+          <div class="editor-wrap">
+            <label>正文（可编辑）</label>
+            <div class="editor-toolbar">
+              <button type="button" data-cmd="bold" title="粗体">B</button>
+              <button type="button" data-cmd="italic" title="斜体">I</button>
+              <button type="button" data-cmd="insertUnorderedList" title="无序列表">列表</button>
+            </div>
+            <div id="editor-container" contenteditable="true"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="platforms">
+        <h3>同步到平台</h3>
+        <div class="platform-list">
+          <label><input type="checkbox" name="platform" value="xiaohongshu" /> 小红书</label>
+          <label><input type="checkbox" name="platform" value="zhihu" /> 知乎</label>
+          <label><input type="checkbox" name="platform" value="tencentcloud" /> 腾讯云创作者平台</label>
+        </div>
+        <div class="sync-row">
+          <button type="button" class="btn btn-secondary" id="btn-sync">同步</button>
+          <span id="status" class="status"></span>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="vendor/mammoth.browser.min.js"></script>
+  <script src="dist.js"></script>
+</body>
+</html>

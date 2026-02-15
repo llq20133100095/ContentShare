@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "全平台内容分发",
+  "version": "1.0.0",
+  "description": "从腾讯文档提取内容并同步到小红书、知乎等平台",
+  "action": {},
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "scripting",
+    "notifications",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://docs.qq.com/*",
+    "https://*.docs.qq.com/*",
+    "https://docimg*.docs.qq.com/*",
+    "https://creator.xiaohongshu.com/*",
+    "https://cloud.tencent.com/*",
+    "https://www.zhihu.com/*",
+    "https://zhuanlan.zhihu.com/*",
+    "https://api.zhihu.com/*",
+    "https://*.zhimg.com/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' data: blob: https: http:;"
+  }
+}
