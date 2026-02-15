@@ -23,12 +23,506 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleSync(message, sendResponse);
     return true;
   }
+  if (message.type === 'ZHIHU_PARSE_MEDIA') {
+    handleZhihuParseMedia(message.url, sendResponse);
+    return true;
+  }
 });
 
 // ─── 工具函数 ────────────────────────────────────────
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ─── 知乎媒体下载：解析与提取 ───────────────────────────────
+
+const ZHIHU_API_HEADERS = {
+  'accept': 'application/json',
+  'x-api-version': '3.0.91',
+  'x-app-version': '8.0.0',
+  'x-app-za': 'OS=iOS&Release=17.0&Model=iPhone15,2&VersionName=8.0.0',
+  'x-app-build': 'release'
+};
+
+function parseZhihuUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return null;
+
+  let m = raw.match(/zhihu\.com\/question\/(\d+)\/answer\/(\d+)/i);
+  if (m) return { type: 'answer', questionId: m[1], answerId: m[2] };
+
+  m = raw.match(/zhihu\.com\/p\/(\d+)/i);
+  if (m) return { type: 'article', articleId: m[1] };
+
+  m = raw.match(/zhihu\.com\/question\/(\d+)/i);
+  if (m) return { type: 'question', questionId: m[1] };
+
+  return null;
+}
+
+async function fetchJson(url, headers = {}) {
+  try {
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers,
+      credentials: 'omit'
+    });
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (_) {
+    return null;
+  }
+}
+
+function pickFirstContent(candidates) {
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) return c;
+  }
+  return '';
+}
+
+async function fetchZhihuContent(parsed) {
+  if (!parsed) return '';
+  if (parsed.type === 'answer') {
+    const apiV3 = `https://api.zhihu.com/answers/${parsed.answerId}?include=content%2Cexcerpt%2Cvoteup_count`;
+    const apiV4 = `https://www.zhihu.com/api/v4/answers/${parsed.answerId}?include=content`;
+    const d1 = await fetchJson(apiV3, ZHIHU_API_HEADERS);
+    const d2 = d1?.content ? null : await fetchJson(apiV4, {});
+    return pickFirstContent([d1?.content, d2?.content]);
+  }
+  if (parsed.type === 'article') {
+    const apiV3 = `https://api.zhihu.com/articles/${parsed.articleId}?include=content`;
+    const apiV4 = `https://www.zhihu.com/api/v4/articles/${parsed.articleId}?include=content`;
+    const d1 = await fetchJson(apiV3, ZHIHU_API_HEADERS);
+    const d2 = d1?.content ? null : await fetchJson(apiV4, {});
+    return pickFirstContent([d1?.content, d2?.content]);
+  }
+  if (parsed.type === 'question') {
+    const apiV3 = `https://api.zhihu.com/questions/${parsed.questionId}/answers?include=content%2Cexcerpt%2Cvoteup_count&limit=1&offset=0`;
+    const apiV4 = `https://www.zhihu.com/api/v4/questions/${parsed.questionId}/answers?include=content&limit=1&offset=0`;
+    const d1 = await fetchJson(apiV3, ZHIHU_API_HEADERS);
+    const first1 = Array.isArray(d1?.data) ? d1.data[0] : null;
+    const d2 = first1?.content ? null : await fetchJson(apiV4, {});
+    const first2 = Array.isArray(d2?.data) ? d2.data[0] : null;
+    return pickFirstContent([first1?.content, first2?.content]);
+  }
+  return '';
+}
+
+function extractAttrFromTag(tag, attrName) {
+  const name = String(attrName || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`\\b${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i');
+  const m = String(tag || '').match(re);
+  if (!m) return '';
+  return m[2] || m[3] || m[4] || '';
+}
+
+function normalizeUrl(url) {
+  let u = String(url || '').trim();
+  if (!u || u.startsWith('data:')) return '';
+  if (u.startsWith('//')) u = `https:${u}`;
+  return u;
+}
+
+function buildNoWatermarkUrl(token) {
+  const t = String(token || '').trim();
+  if (!t) return '';
+  return `https://pic1.zhimg.com/${t}_r.jpg`;
+}
+
+function stripSourceParam(url) {
+  return String(url || '').replace(/\?source=[^&]*$/i, '');
+}
+
+function extractImageUrlsFromHtml(htmlContent) {
+  const html = String(htmlContent || '');
+  const seen = new Set();
+  const images = [];
+  const tokenSeen = new Set();
+
+  const add = (url, thumb, width, height) => {
+    const clean = normalizeUrl(url);
+    if (!clean || !/zhimg\.com/i.test(clean) || seen.has(clean)) return;
+    seen.add(clean);
+    images.push({
+      url: clean,
+      thumbnail: normalizeUrl(thumb) || clean,
+      width: Number(width || 0) || 0,
+      height: Number(height || 0) || 0
+    });
+  };
+
+  const addToken = (token) => {
+    const t = String(token || '').trim();
+    if (!t || tokenSeen.has(t)) return;
+    tokenSeen.add(t);
+    add(buildNoWatermarkUrl(t), '', 0, 0);
+  };
+
+  // 1) 常规 img 标签提取
+  const imgTagRe = /<img\b[^>]*>/gi;
+  let m;
+  while ((m = imgTagRe.exec(html)) !== null) {
+    const tag = m[0];
+    const token = extractAttrFromTag(tag, 'data-original-token');
+    addToken(token);
+    const nowm = token ? buildNoWatermarkUrl(token) : '';
+    const original = extractAttrFromTag(tag, 'data-original')
+      || extractAttrFromTag(tag, 'data-actualsrc')
+      || extractAttrFromTag(tag, 'src');
+    const fallback = stripSourceParam(normalizeUrl(original));
+    const best = nowm || fallback;
+    const thumb = extractAttrFromTag(tag, 'src') || original;
+    add(best, thumb, extractAttrFromTag(tag, 'data-rawwidth'), extractAttrFromTag(tag, 'data-rawheight'));
+  }
+
+  // 2) figure/div 等非 img 标签上的 token（知乎新版常见）
+  const tokenRe = /data-original-token\s*=\s*["']([^"']+)["']/gi;
+  while ((m = tokenRe.exec(html)) !== null) {
+    addToken(m[1]);
+  }
+
+  // 3) 非 img 标签上的原图地址属性
+  const dataOrigRe = /\b(?:data-original|data-actualsrc)\s*=\s*["']([^"']+)["']/gi;
+  while ((m = dataOrigRe.exec(html)) !== null) {
+    add(stripSourceParam(normalizeUrl(m[1])), '', 0, 0);
+  }
+
+  // 4) 全文 zhimg 直链兜底（包含 noscript/json 片段）
+  const zhimgUrlRe = /https?:\/\/[^"'<>\s]*zhimg\.com\/[^"'<>\s]+/gi;
+  while ((m = zhimgUrlRe.exec(html)) !== null) {
+    add(stripSourceParam(normalizeUrl(m[0])), '', 0, 0);
+  }
+
+  return images;
+}
+
+function extractVideoIdsFromHtml(htmlContent) {
+  const html = String(htmlContent || '');
+  const ids = [];
+  const seen = new Set();
+
+  const videoBoxRe = /<a\b[^>]*class=["'][^"']*video-box[^"']*["'][^>]*>/gi;
+  let m;
+  while ((m = videoBoxRe.exec(html)) !== null) {
+    const tag = m[0];
+    let vid = extractAttrFromTag(tag, 'data-lens-id');
+    if (!vid) {
+      const href = extractAttrFromTag(tag, 'href');
+      const hm = String(href || '').match(/video\/(\d+)/i);
+      if (hm) vid = hm[1];
+    }
+    if (vid && !seen.has(vid)) {
+      seen.add(vid);
+      ids.push({
+        id: vid,
+        poster: normalizeUrl(extractAttrFromTag(tag, 'data-poster')) || ''
+      });
+    }
+  }
+
+  const fallbackRe = /zhihu\.com\/video\/(\d+)/gi;
+  while ((m = fallbackRe.exec(html)) !== null) {
+    const vid = m[1];
+    if (vid && !seen.has(vid)) {
+      seen.add(vid);
+      ids.push({ id: vid, poster: '' });
+    }
+  }
+
+  return ids;
+}
+
+function formatSize(sizeBytes) {
+  const n = Number(sizeBytes || 0);
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+async function fetchVideoDetail(videoId, poster = '') {
+  try {
+    const apiUrl = `https://lens.zhihu.com/api/v4/videos/${videoId}`;
+    const data = await fetchJson(apiUrl, {});
+    const playlist = data?.playlist || {};
+    const priority = ['HD', 'SD', 'LD'];
+    for (const quality of priority) {
+      const item = playlist[quality];
+      if (item?.play_url) {
+        return {
+          id: String(videoId),
+          poster,
+          play_url: item.play_url,
+          quality,
+          width: Number(item.width || 0) || 0,
+          height: Number(item.height || 0) || 0,
+          size: Number(item.size || 0) || 0,
+          size_str: formatSize(item.size || 0)
+        };
+      }
+    }
+    const keys = Object.keys(playlist);
+    for (const k of keys) {
+      const item = playlist[k];
+      if (item?.play_url) {
+        return {
+          id: String(videoId),
+          poster,
+          play_url: item.play_url,
+          quality: k,
+          width: Number(item.width || 0) || 0,
+          height: Number(item.height || 0) || 0,
+          size: Number(item.size || 0) || 0,
+          size_str: formatSize(item.size || 0)
+        };
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+function mergeImageLists(...lists) {
+  const out = [];
+  const seen = new Set();
+  for (const list of lists) {
+    const arr = Array.isArray(list) ? list : [];
+    for (const item of arr) {
+      const url = normalizeUrl(item?.url || '');
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      out.push({
+        url,
+        thumbnail: normalizeUrl(item?.thumbnail || '') || url,
+        width: Number(item?.width || 0) || 0,
+        height: Number(item?.height || 0) || 0
+      });
+    }
+  }
+  return out;
+}
+
+function mergeVideoRefLists(...lists) {
+  const out = [];
+  const seen = new Set();
+  for (const list of lists) {
+    const arr = Array.isArray(list) ? list : [];
+    for (const item of arr) {
+      const id = String(item?.id || '').trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push({
+        id,
+        poster: normalizeUrl(item?.poster || '')
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * 在知乎页面中以同源身份调用 API，拿到完整未截断的 content HTML，
+ * 再提取图片和视频。参考 zhihu_download 项目思路。
+ */
+async function extractMediaViaPageApi(parsedUrl, pageUrl) {
+  let tabId = null;
+  try {
+    // 打开知乎页面（后台标签），获得同源上下文
+    const tab = await new Promise((resolve) => {
+      chrome.tabs.create({ url: pageUrl, active: false }, resolve);
+    });
+    tabId = tab?.id || null;
+    if (!tabId) return { images: [], videoRefs: [] };
+
+    await waitForTabComplete(tabId, 25000);
+    await sleep(2000);
+
+    const exec = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: async (parsedInfo) => {
+        // ─── 工具函数（完全自包含，不能引用外部变量） ───
+        const norm = (u) => {
+          let s = String(u || '').trim();
+          if (!s || s.startsWith('data:')) return '';
+          if (s.startsWith('//')) s = 'https:' + s;
+          return s;
+        };
+        const stripSource = (u) => String(u || '').replace(/\?source=[^&]*$/i, '');
+        const buildNowm = (token) => {
+          const t = String(token || '').trim();
+          return t ? `https://pic1.zhimg.com/${t}_r.jpg` : '';
+        };
+
+        // ─── 1) 同源 API 调用：拿完整 content HTML ───
+        let apiContent = '';
+        try {
+          let apiPath = '';
+          if (parsedInfo.type === 'answer') {
+            apiPath = '/api/v4/answers/' + parsedInfo.answerId + '?include=content';
+          } else if (parsedInfo.type === 'article') {
+            apiPath = '/api/v4/articles/' + parsedInfo.articleId + '?include=content';
+          } else if (parsedInfo.type === 'question') {
+            apiPath = '/api/v4/questions/' + parsedInfo.questionId + '/answers?include=content&limit=5&offset=0';
+          }
+          if (apiPath) {
+            const resp = await fetch(apiPath, { credentials: 'include' });
+            if (resp.ok) {
+              const data = await resp.json();
+              if (parsedInfo.type === 'question') {
+                const items = Array.isArray(data?.data) ? data.data : [];
+                apiContent = items.map(i => i.content || '').join('\n');
+              } else {
+                apiContent = data?.content || '';
+              }
+            }
+          }
+        } catch (_) {}
+
+        // ─── 2) 从 API content HTML 提取图片与视频（严格对齐 zhihu_download） ───
+        // 只从 <figure> 和 <noscript> 中的 <img> 提取，不做全文扫描
+        const images = [];
+        const seenImg = new Set();
+        const addImg = (url, thumb, w, h) => {
+          const clean = norm(url);
+          if (!clean || !/zhimg\.com/i.test(clean) || seenImg.has(clean)) return;
+          seenImg.add(clean);
+          images.push({
+            url: clean,
+            thumbnail: norm(thumb) || clean,
+            width: Number(w || 0) || 0,
+            height: Number(h || 0) || 0
+          });
+        };
+
+        const videoRefs = [];
+        const seenVideo = new Set();
+        const addVid = (id, poster) => {
+          const vid = String(id || '').trim();
+          if (!vid || seenVideo.has(vid)) return;
+          seenVideo.add(vid);
+          videoRefs.push({ id: vid, poster: norm(poster) });
+        };
+
+        if (apiContent) {
+          const doc = new DOMParser().parseFromString(apiContent, 'text/html');
+
+          // figure > img （文章正文图片的标准结构）
+          for (const figure of Array.from(doc.querySelectorAll('figure'))) {
+            for (const img of Array.from(figure.querySelectorAll('img'))) {
+              const token = img.getAttribute('data-original-token') || '';
+              const nowm = buildNowm(token);
+              const orig = img.getAttribute('data-original')
+                || img.getAttribute('data-actualsrc')
+                || img.getAttribute('src') || '';
+              const fallback = stripSource(norm(orig));
+              const best = nowm || fallback;
+              let thumb = img.getAttribute('src') || orig;
+              if (thumb && thumb.startsWith('data:')) thumb = orig;
+              addImg(best, thumb,
+                img.getAttribute('data-rawwidth'),
+                img.getAttribute('data-rawheight'));
+            }
+          }
+
+          // noscript > img （部分回答的备用结构）
+          for (const ns of Array.from(doc.querySelectorAll('noscript'))) {
+            const inner = new DOMParser().parseFromString(ns.textContent || '', 'text/html');
+            for (const img of Array.from(inner.querySelectorAll('img'))) {
+              const token = img.getAttribute('data-original-token') || '';
+              const nowm = buildNowm(token);
+              const orig = img.getAttribute('data-original')
+                || img.getAttribute('src') || '';
+              const fallback = stripSource(norm(orig));
+              addImg(nowm || fallback, '',
+                img.getAttribute('data-rawwidth'),
+                img.getAttribute('data-rawheight'));
+            }
+          }
+
+          // 视频：a.video-box + 正则兜底
+          for (const a of Array.from(doc.querySelectorAll('a.video-box'))) {
+            let vid = a.getAttribute('data-lens-id') || '';
+            if (!vid) {
+              const href = a.getAttribute('href') || '';
+              const hm = href.match(/video\/(\d+)/i);
+              if (hm) vid = hm[1];
+            }
+            addVid(vid, a.getAttribute('data-poster') || '');
+          }
+          let m;
+          const videoUrlRe = /zhihu\.com\/video\/(\d+)/gi;
+          while ((m = videoUrlRe.exec(apiContent)) !== null) addVid(m[1], '');
+        }
+
+        return { images, videoRefs };
+      },
+      args: [parsedUrl]
+    });
+
+    const result = exec?.[0]?.result || { images: [], videoRefs: [] };
+    return {
+      images: Array.isArray(result.images) ? result.images : [],
+      videoRefs: Array.isArray(result.videoRefs) ? result.videoRefs : []
+    };
+  } catch (_) {
+    return { images: [], videoRefs: [] };
+  } finally {
+    if (tabId) {
+      try { await new Promise((resolve) => chrome.tabs.remove(tabId, resolve)); } catch (_) {}
+    }
+  }
+}
+
+async function handleZhihuParseMedia(url, sendResponse) {
+  try {
+    const parsed = parseZhihuUrl(url);
+    if (!parsed) {
+      sendResponse({ type: 'ZHIHU_PARSE_RESULT', success: false, error: '无法识别的知乎链接，请输入回答、问题或文章链接' });
+      return;
+    }
+
+    // 核心策略：在知乎页面中以同源身份调用 API（带 cookies），
+    // 同时从渲染 DOM 提取，两路合并确保不漏图。
+    const pageResult = await extractMediaViaPageApi(parsed, String(url || ''));
+    let images = pageResult.images;
+    let videoRefs = pageResult.videoRefs;
+
+    // 如果页面通道失败（被拦截/超时），降级用 service worker 直接调 API
+    if (images.length === 0) {
+      const content = await fetchZhihuContent(parsed);
+      if (content) {
+        images = extractImageUrlsFromHtml(content);
+        videoRefs = extractVideoIdsFromHtml(content);
+      }
+    }
+
+    const videos = [];
+    for (const ref of mergeVideoRefLists(videoRefs)) {
+      const detail = await fetchVideoDetail(ref.id, ref.poster);
+      if (detail) videos.push(detail);
+    }
+
+    if (images.length === 0 && videos.length === 0) {
+      sendResponse({ type: 'ZHIHU_PARSE_RESULT', success: false, error: '该页面未找到图片或视频资源' });
+      return;
+    }
+
+    sendResponse({
+      type: 'ZHIHU_PARSE_RESULT',
+      success: true,
+      data: {
+        images,
+        videos
+      }
+    });
+  } catch (err) {
+    sendResponse({
+      type: 'ZHIHU_PARSE_RESULT',
+      success: false,
+      error: err?.message || '解析失败'
+    });
+  }
 }
 
 function waitForTabComplete(tabId, timeoutMs = 30000) {
@@ -1379,7 +1873,7 @@ function fillXiaohongshu(title, bodyHtml) {
 /**
  * 注入到腾讯云创作者平台写文章页面的填充函数
  */
-function fillTencentCloud(title, bodyHtml) {
+async function fillTencentCloud(title, bodyHtml) {
   const TITLE_SELS = [
     'input[placeholder*="标题"]',
     'textarea[placeholder*="标题"]',
@@ -1410,6 +1904,17 @@ function fillTencentCloud(title, bodyHtml) {
       try {
         const list = Array.from(document.querySelectorAll(sel));
         const el = list.find((node) => isVisible(node));
+        if (el) return el;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  function findBodyExcept(sels, excludedEl) {
+    for (const sel of sels) {
+      try {
+        const list = Array.from(document.querySelectorAll(sel));
+        const el = list.find((node) => isVisible(node) && node !== excludedEl);
         if (el) return el;
       } catch (_) {}
     }
@@ -1459,6 +1964,298 @@ function fillTencentCloud(title, bodyHtml) {
     return doc.body.innerHTML || '';
   }
 
+  function collectInlineDataImages(html) {
+    try {
+      const doc = new DOMParser().parseFromString(html || '', 'text/html');
+      const list = [];
+      const seed = Date.now().toString(36);
+      doc.querySelectorAll('img').forEach((img, idx) => {
+        const src = img.getAttribute('src') || '';
+        if (/^data:image\//i.test(src)) {
+          const altText = (img.getAttribute('alt') || '').trim() || `图片${idx + 1}`;
+          const token = `cs-inline-${seed}-${idx + 1}`;
+          const markerText = `[[CS_IMG_${seed}_${idx + 1}]]`;
+          list.push({
+            index: idx + 1,
+            src,
+            alt: altText,
+            token,
+            markerText
+          });
+          const marker = doc.createElement('p');
+          marker.setAttribute('data-cs-inline-token', token);
+          marker.textContent = markerText;
+          marker.style.color = '#6b7280';
+          img.replaceWith(marker);
+        }
+      });
+      return {
+        htmlWithoutInlineImages: doc.body.innerHTML || html || '',
+        inlineImages: list
+      };
+    } catch (_) {
+      return { htmlWithoutInlineImages: html || '', inlineImages: [] };
+    }
+  }
+
+  function findMarker(bodyEl, token, markerText) {
+    if (!bodyEl) return null;
+    try {
+      if (token) {
+        const escaped = token.replace(/"/g, '\\"');
+        const byAttr = bodyEl.querySelector(`[data-cs-inline-token="${escaped}"]`);
+        if (byAttr) return byAttr;
+      }
+    } catch (_) {}
+    if (!markerText) return null;
+    const nodes = Array.from(bodyEl.querySelectorAll('p,div,span,li'));
+    const target = String(markerText || '').trim();
+    return nodes.find((el) => {
+      const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!txt || !target) return false;
+      return txt === target || txt.includes(target);
+    }) || null;
+  }
+
+  function updateMarkerText(bodyEl, token, markerText, text) {
+    const marker = findMarker(bodyEl, token, markerText);
+    if (!marker) return;
+    marker.textContent = text;
+  }
+
+  function removeMarker(bodyEl, token, markerText) {
+    const marker = findMarker(bodyEl, token, markerText);
+    if (!marker) return;
+    marker.remove();
+  }
+
+  function cleanupIfEmpty(node) {
+    if (!node || !node.parentNode) return;
+    const txt = (node.textContent || '').trim();
+    const hasImg = node.querySelector && node.querySelector('img');
+    if (!txt && !hasImg) {
+      node.remove();
+    }
+  }
+
+  function moveLatestInsertedImageToMarker(bodyEl, token, markerText, imgCountBefore) {
+    if (!bodyEl) return false;
+    const marker = findMarker(bodyEl, token, markerText);
+    if (!marker) return false;
+    const imgs = Array.from(bodyEl.querySelectorAll('img'));
+    if (imgs.length <= imgCountBefore) return false;
+
+    // 优先选择“新增区间”中的最后一张，通常是刚上传的图片。
+    const candidate = imgs[imgs.length - 1];
+    if (!candidate) return false;
+    if (candidate === marker || marker.contains(candidate)) return false;
+
+    const oldParent = candidate.parentElement;
+    marker.replaceWith(candidate);
+    cleanupIfEmpty(oldParent);
+    return true;
+  }
+
+  async function waitForImageCountIncrease(bodyEl, beforeCount, timeoutMs = 9000) {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const now = bodyEl.querySelectorAll('img').length;
+      if (now > beforeCount) return now;
+      await wait(450);
+    }
+    return bodyEl.querySelectorAll('img').length;
+  }
+
+  function stripAllMarkerTokens(bodyEl) {
+    if (!bodyEl) return;
+    try {
+      const walker = document.createTreeWalker(bodyEl, NodeFilter.SHOW_TEXT);
+      const toClean = [];
+      while (walker.nextNode()) {
+        const n = walker.currentNode;
+        if (!n || !n.nodeValue) continue;
+        if (/\[\[CS_IMG_[^\]]+\]\]/.test(n.nodeValue)) toClean.push(n);
+      }
+      toClean.forEach((n) => {
+        n.nodeValue = n.nodeValue.replace(/\[\[CS_IMG_[^\]]+\]\]/g, '').replace(/\s{2,}/g, ' ').trim();
+      });
+
+      Array.from(bodyEl.querySelectorAll('p,div,span,li')).forEach((el) => {
+        const txt = (el.textContent || '').trim();
+        const hasImg = !!el.querySelector('img');
+        if (!txt && !hasImg) el.remove();
+      });
+      triggerInput(bodyEl);
+    } catch (_) {}
+  }
+
+  function placeCaretAtMarker(bodyEl, token, markerText) {
+    const marker = findMarker(bodyEl, token, markerText);
+    if (!bodyEl || !marker) return false;
+    try {
+      bodyEl.focus();
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.setStartBefore(marker);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function dataUrlToSupportedFile(dataUrl, idx, alt) {
+    try {
+      const arr = String(dataUrl || '').split(',');
+      const mimeMatch = arr[0]?.match(/:(.*?);/);
+      if (!mimeMatch || !arr[1]) return null;
+      const mime = mimeMatch[1];
+      const ext = (mime.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '') || 'png';
+      const bstr = atob(arr[1]);
+      const u8 = new Uint8Array(bstr.length);
+      for (let i = 0; i < bstr.length; i++) u8[i] = bstr.charCodeAt(i);
+      const safeBase = `${String(alt || 'image').replace(/[^\w\u4e00-\u9fa5-]/g, '_') || 'image'}_${idx}`;
+      const rawFile = new File([u8], `${safeBase}.${ext}`, { type: mime });
+      const normalizedMime = String(mime).toLowerCase();
+      const supported = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/gif']);
+      if (supported.has(normalizedMime)) return rawFile;
+
+      // 腾讯云不支持 webp 等格式，统一转 jpeg 再上传。
+      const jpegFile = await convertFileToJpeg(rawFile, safeBase);
+      return jpegFile || rawFile;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function convertFileToJpeg(file, baseName) {
+    try {
+      const objectUrl = URL.createObjectURL(file);
+      const img = await new Promise((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = reject;
+        el.src = objectUrl;
+      });
+      URL.revokeObjectURL(objectUrl);
+
+      const w = Math.max(1, img.naturalWidth || img.width || 1);
+      const h = Math.max(1, img.naturalHeight || img.height || 1);
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9));
+      if (!blob) return null;
+      return new File([blob], `${baseName}.jpg`, { type: 'image/jpeg' });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function tryPasteSingleImage(bodyEl, file, token, markerText) {
+    if (!bodyEl || !file) return false;
+    placeCaretAtMarker(bodyEl, token, markerText);
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      const evt = new ClipboardEvent('paste', {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: dt
+      });
+      bodyEl.dispatchEvent(evt);
+      return true;
+    } catch (_) {
+      try {
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        const evt = new DragEvent('drop', {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: dt
+        });
+        bodyEl.dispatchEvent(evt);
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+  }
+
+  async function tryUploadSingleImageByFileInput(file) {
+    if (!file) return false;
+    const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
+    if (fileInputs.length === 0) return false;
+
+    // 优先命中声明图片上传能力的 input。
+    const target = fileInputs.find((el) => {
+      const accept = (el.getAttribute('accept') || '').toLowerCase();
+      return accept.includes('image');
+    }) || fileInputs[0];
+
+    if (!target) return false;
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      target.files = dt.files;
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function uploadInlineImagesAtMarkers(bodyEl, inlineImages) {
+    if (!bodyEl || !inlineImages || inlineImages.length === 0) return { attempted: 0, success: 0 };
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    let success = 0;
+
+    for (let i = 0; i < inlineImages.length; i++) {
+      const item = inlineImages[i];
+      const alt = (item.alt || `图片${i + 1}`).trim() || `图片${i + 1}`;
+      const file = await dataUrlToSupportedFile(item.src, i + 1, alt);
+      if (!file) {
+        updateMarkerText(bodyEl, item.token, item.markerText, `[${alt} 上传失败，请手动上传]`);
+        continue;
+      }
+
+      const imgCountBefore = bodyEl.querySelectorAll('img').length;
+      let sent = false;
+
+      // 优先通过粘贴/拖拽在当前位置触发上传，保证图文对应。
+      sent = await tryPasteSingleImage(bodyEl, file, item.token, item.markerText);
+      if (!sent) {
+        placeCaretAtMarker(bodyEl, item.token, item.markerText);
+        sent = await tryUploadSingleImageByFileInput(file);
+      }
+      if (!sent) {
+        updateMarkerText(bodyEl, item.token, item.markerText, `[${alt} 上传失败，请手动上传]`);
+        continue;
+      }
+
+      const imgCountAfter = await waitForImageCountIncrease(bodyEl, imgCountBefore, 9000);
+      if (imgCountAfter > imgCountBefore) {
+        const moved = moveLatestInsertedImageToMarker(bodyEl, item.token, item.markerText, imgCountBefore);
+        if (!moved) removeMarker(bodyEl, item.token, item.markerText);
+        success++;
+      } else {
+        updateMarkerText(bodyEl, item.token, item.markerText, `[${alt} 上传失败，请手动上传]`);
+      }
+      triggerInput(bodyEl);
+    }
+    return { attempted: inlineImages.length, success };
+  }
+
   let ok = false;
 
   const titleEl = find(TITLE_SELS);
@@ -1478,9 +2275,10 @@ function fillTencentCloud(title, bodyHtml) {
     ok = true;
   }
 
-  const bodyEl = find(BODY_SELS);
+  const bodyEl = findBodyExcept(BODY_SELS, titleEl);
   if (bodyEl) {
     const cleanedHtml = normalizeHtml(bodyHtml || '');
+    const inlineInfo = collectInlineDataImages(cleanedHtml);
     if (bodyEl.contentEditable === 'true' || bodyEl.getAttribute('contenteditable') === 'true') {
       bodyEl.focus();
       const sel = window.getSelection();
@@ -1489,13 +2287,26 @@ function fillTencentCloud(title, bodyHtml) {
       sel.removeAllRanges();
       sel.addRange(range);
       try {
-        document.execCommand('insertHTML', false, cleanedHtml);
+        document.execCommand('insertHTML', false, inlineInfo.htmlWithoutInlineImages);
       } catch (_) {
-        bodyEl.innerHTML = cleanedHtml;
+        bodyEl.innerHTML = inlineInfo.htmlWithoutInlineImages;
+      }
+      // 部分编辑器会忽略 insertHTML；检测失败后强制回退 innerHTML。
+      const expectedLen = htmlToText(inlineInfo.htmlWithoutInlineImages).trim().length;
+      const actualLen = (bodyEl.innerText || bodyEl.textContent || '').trim().length;
+      if (expectedLen > 0 && actualLen < Math.floor(expectedLen * 0.5)) {
+        bodyEl.innerHTML = inlineInfo.htmlWithoutInlineImages;
       }
       triggerInput(bodyEl);
+
+      // 尝试把 data:image 内嵌图作为文件粘贴到腾讯云编辑器，触发平台上传。
+      if (inlineInfo.inlineImages.length > 0) {
+        await uploadInlineImagesAtMarkers(bodyEl, inlineInfo.inlineImages);
+      }
+      // 最终兜底：清理可能残留的锚点文本 [[CS_IMG_xxx]]。
+      stripAllMarkerTokens(bodyEl);
     } else {
-      setNativeValue(bodyEl, htmlToText(cleanedHtml));
+      setNativeValue(bodyEl, htmlToText(inlineInfo.htmlWithoutInlineImages));
       triggerInput(bodyEl);
     }
     ok = true;
@@ -1770,6 +2581,64 @@ function escapeHtmlForFill(text) {
     .replace(/'/g, '&#39;');
 }
 
+function decodeHtmlEntities(text) {
+  return String(text || '')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, '\'')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&');
+}
+
+function normalizeTencentImageUrl(url) {
+  let u = String(url || '').trim();
+  if (!u) return '';
+  u = decodeHtmlEntities(u).replace(/^['"]|['"]$/g, '');
+  if (!u) return '';
+  if (u.startsWith('//')) u = `https:${u}`;
+  return u;
+}
+
+function extractAttrFromTag(tag, attrName) {
+  const attr = String(attrName || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const reg = new RegExp(`\\b${attr}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i');
+  const m = String(tag || '').match(reg);
+  if (!m) return '';
+  return m[2] || m[3] || m[4] || '';
+}
+
+function preprocessTencentCloudBodyHtml(bodyHtml) {
+  const srcList = [];
+  let converted = 0;
+  let dataImageCount = 0;
+  const html = String(bodyHtml || '').replace(/<img\b[^>]*>/gi, (tag) => {
+    const src = normalizeTencentImageUrl(extractAttrFromTag(tag, 'src'));
+    const altRaw = decodeHtmlEntities(extractAttrFromTag(tag, 'alt'));
+    const alt = altRaw.trim() || '图片';
+
+    if (!src) {
+      converted++;
+      return `<p>[${escapeHtmlForFill(alt)}：未提取到可用链接，请手动上传]</p>`;
+    }
+    if (/^https?:\/\//i.test(src)) {
+      converted++;
+      srcList.push(src);
+      const safeUrl = escapeHtmlForFill(src);
+      return `<p><a href="${safeUrl}" target="_blank" rel="noopener noreferrer">图片链接：${safeUrl}</a></p>`;
+    }
+    if (/^data:image\//i.test(src)) {
+      converted++;
+      dataImageCount++;
+      // 保留 data:image，后续在腾讯云页面中尝试模拟粘贴触发上传。
+      return `<img src="${escapeHtmlForFill(src)}" alt="${escapeHtmlForFill(alt)}" />`;
+    }
+    converted++;
+    return `<p>[${escapeHtmlForFill(alt)}：图片地址不可用，请手动上传]</p>`;
+  });
+
+  return { html, converted, dataImageCount, linkCount: srcList.length };
+}
+
 const PLATFORM_FILL_FUNCS = {
   xiaohongshu: fillXiaohongshu,
   zhihu: fillZhihu,
@@ -1834,6 +2703,10 @@ async function handleSync(msg, sendResponse) {
           console.warn('[ContentShare] 上传脚本执行失败，剥离data图片:', e);
           platformBodyHtml = stripDataImagesFromHtml(bodyHtml);
         }
+      }
+      if (platform === 'tencentcloud') {
+        const processed = preprocessTencentCloudBodyHtml(bodyHtml || '');
+        platformBodyHtml = processed.html;
       }
 
       const execResults = await chrome.scripting.executeScript({

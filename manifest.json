@@ -23,6 +23,7 @@
     "https://www.zhihu.com/*",
     "https://zhuanlan.zhihu.com/*",
     "https://api.zhihu.com/*",
+    "https://lens.zhihu.com/*",
     "https://*.zhimg.com/*"
   ],
   "content_security_policy": {

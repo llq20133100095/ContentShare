@@ -11,6 +11,7 @@ const coverPreview = document.getElementById('cover-preview');
 const coverUrlEl = document.getElementById('cover-url');
 const editorContainer = document.getElementById('editor-container');
 const btnSync = document.getElementById('btn-sync');
+const btnOpenZhihuDownload = document.getElementById('btn-open-zhihu-download');
 const statusEl = document.getElementById('status');
 
 // 富文本工具栏
@@ -476,3 +477,9 @@ btnSync.addEventListener('click', () => {
     }
   );
 });
+
+if (btnOpenZhihuDownload) {
+  btnOpenZhihuDownload.addEventListener('click', () => {
+    window.location.href = chrome.runtime.getURL('zhihu-download.html');
+  });
+}

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>知乎媒体下载</title>
+  <link rel="stylesheet" href="zhihu-download.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>知乎媒体下载</h1>
+      <p>输入知乎回答/问题/文章链接，解析并下载图片和视频</p>
+    </header>
+
+    <section class="input-panel">
+      <input id="zhihu-url" type="text" placeholder="https://www.zhihu.com/question/.../answer/...">
+      <button id="btn-parse" class="btn">解析</button>
+      <button id="btn-open-main" class="btn btn-secondary">返回内容分发</button>
+    </section>
+
+    <div id="status" class="status"></div>
+
+    <section id="result-wrap" class="result-wrap hidden">
+      <div class="section">
+        <div class="section-head">
+          <h2>图片</h2>
+          <span id="image-count" class="count"></span>
+        </div>
+        <div id="image-grid" class="grid"></div>
+      </div>
+
+      <div class="section">
+        <div class="section-head">
+          <h2>视频</h2>
+          <span id="video-count" class="count"></span>
+        </div>
+        <div id="video-grid" class="grid"></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="bottom-bar">
+    <button id="btn-download-all" class="btn btn-primary" disabled>全部下载 ZIP</button>
+  </div>
+
+  <script src="vendor/jszip.min.js"></script>
+  <script src="zhihu-download.js"></script>
+</body>
+</html>

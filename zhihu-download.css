@@ -1,0 +1,182 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f5f6f8;
+  color: #222;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px 20px 88px;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.header p {
+  margin: 8px 0 0;
+  color: #666;
+}
+
+.input-panel {
+  margin-top: 16px;
+  display: flex;
+  gap: 10px;
+}
+
+.input-panel input {
+  flex: 1;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.btn {
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  cursor: pointer;
+  color: #fff;
+  background: #1772f6;
+  font-size: 14px;
+}
+
+.btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: #6b7280;
+}
+
+.btn-primary {
+  background: #0f62fe;
+}
+
+.status {
+  margin-top: 12px;
+  color: #555;
+  min-height: 20px;
+}
+
+.status.error {
+  color: #cc2020;
+}
+
+.status.success {
+  color: #0b7a27;
+}
+
+.hidden {
+  display: none;
+}
+
+.result-wrap {
+  margin-top: 14px;
+}
+
+.section {
+  margin-top: 18px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.section-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.count {
+  color: #666;
+  font-size: 12px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.thumb-wrap {
+  position: relative;
+}
+
+.thumb {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  background: #eceef2;
+  display: block;
+}
+
+.badge {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 10px;
+}
+
+.card-body {
+  padding: 10px;
+}
+
+.name {
+  font-size: 13px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.meta {
+  margin-top: 4px;
+  color: #666;
+  font-size: 12px;
+}
+
+.btn-dl {
+  margin-top: 8px;
+  width: 100%;
+  border: none;
+  border-radius: 6px;
+  background: #1772f6;
+  color: #fff;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.bottom-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #fff;
+  border-top: 1px solid #e5e7eb;
+  padding: 10px 20px;
+  display: flex;
+  justify-content: center;
+}
