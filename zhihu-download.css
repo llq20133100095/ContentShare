@@ -169,6 +169,27 @@ body {
   cursor: pointer;
 }
 
+.text-area {
+  width: 100%;
+  min-height: 180px;
+  max-height: 420px;
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #333;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.btn-small {
+  padding: 5px 12px;
+  font-size: 12px;
+  background: #6b7280;
+}
+
 .bottom-bar {
   position: fixed;
   left: 0;

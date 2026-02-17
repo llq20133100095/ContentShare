@@ -10,9 +10,13 @@ const imageCountEl = document.getElementById('image-count');
 const videoCountEl = document.getElementById('video-count');
 const imageGridEl = document.getElementById('image-grid');
 const videoGridEl = document.getElementById('video-grid');
+const textSectionEl = document.getElementById('text-section');
+const textContentEl = document.getElementById('text-content');
+const btnCopyTextEl = document.getElementById('btn-copy-text');
 
 let currentImages = [];
 let currentVideos = [];
+let currentText = '';
 
 function setStatus(text, isError = false, isSuccess = false) {
   statusEl.textContent = text || '';
@@ -24,10 +28,13 @@ function setStatus(text, isError = false, isSuccess = false) {
 function clearResults() {
   currentImages = [];
   currentVideos = [];
+  currentText = '';
   imageGridEl.innerHTML = '';
   videoGridEl.innerHTML = '';
   imageCountEl.textContent = '';
   videoCountEl.textContent = '';
+  textContentEl.value = '';
+  textSectionEl.style.display = 'none';
   resultWrapEl.classList.add('hidden');
   btnDownloadAllEl.disabled = true;
 }
@@ -53,9 +60,17 @@ function getImageExt(url) {
   return '.jpg';
 }
 
-function renderResults(images, videos) {
+function renderResults(images, videos, text) {
   currentImages = Array.isArray(images) ? images : [];
   currentVideos = Array.isArray(videos) ? videos : [];
+  currentText = typeof text === 'string' ? text : '';
+
+  if (currentText) {
+    textContentEl.value = currentText;
+    textSectionEl.style.display = 'block';
+  } else {
+    textSectionEl.style.display = 'none';
+  }
 
   imageCountEl.textContent = `${currentImages.length} 张`;
   videoCountEl.textContent = `${currentVideos.length} 个`;
@@ -165,6 +180,10 @@ async function downloadAllZip() {
   let failed = 0;
 
   try {
+    if (currentText) {
+      zip.file('content.txt', currentText);
+    }
+
     for (let i = 0; i < imageTotal; i++) {
       const img = currentImages[i];
       const fileName = `images/image_${String(i + 1).padStart(3, '0')}${getImageExt(img.url)}`;
@@ -242,8 +261,13 @@ async function parseZhihuMedia() {
     }
     const images = resp.data?.images || [];
     const videos = resp.data?.videos || [];
-    renderResults(images, videos);
-    setStatus(`解析完成：${images.length} 张图片，${videos.length} 个视频`, false, true);
+    const text = resp.data?.textContent || '';
+    renderResults(images, videos, text);
+    const parts = [];
+    if (text) parts.push('正文已提取');
+    parts.push(`${images.length} 张图片`);
+    parts.push(`${videos.length} 个视频`);
+    setStatus(`解析完成：${parts.join('，')}`, false, true);
   } catch (err) {
     setStatus(err?.message || '解析失败', true);
   } finally {
@@ -258,6 +282,22 @@ urlInputEl.addEventListener('keydown', (e) => {
 
 btnOpenMainEl.addEventListener('click', () => {
   window.location.href = chrome.runtime.getURL('dist.html');
+});
+
+btnCopyTextEl.addEventListener('click', async () => {
+  if (!currentText) return;
+  try {
+    await navigator.clipboard.writeText(currentText);
+    const orig = btnCopyTextEl.textContent;
+    btnCopyTextEl.textContent = '已复制';
+    setTimeout(() => { btnCopyTextEl.textContent = orig; }, 1500);
+  } catch (_) {
+    textContentEl.select();
+    document.execCommand('copy');
+    const orig = btnCopyTextEl.textContent;
+    btnCopyTextEl.textContent = '已复制';
+    setTimeout(() => { btnCopyTextEl.textContent = orig; }, 1500);
+  }
 });
 
 btnDownloadAllEl.addEventListener('click', downloadAllZip);

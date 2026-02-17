@@ -455,18 +455,28 @@ async function extractMediaViaPageApi(parsedUrl, pageUrl) {
           while ((m = videoUrlRe.exec(apiContent)) !== null) addVid(m[1], '');
         }
 
-        return { images, videoRefs };
+        // ─── 3) 提取正文纯文本 ───
+        let textContent = '';
+        if (apiContent) {
+          const textDoc = new DOMParser().parseFromString(apiContent, 'text/html');
+          // 移除 figure/noscript 等纯媒体标签，只留文本
+          textDoc.querySelectorAll('figure, noscript, script, style').forEach(el => el.remove());
+          textContent = (textDoc.body?.textContent || '').replace(/\s+/g, ' ').trim();
+        }
+
+        return { images, videoRefs, textContent };
       },
       args: [parsedUrl]
     });
 
-    const result = exec?.[0]?.result || { images: [], videoRefs: [] };
+    const result = exec?.[0]?.result || { images: [], videoRefs: [], textContent: '' };
     return {
       images: Array.isArray(result.images) ? result.images : [],
-      videoRefs: Array.isArray(result.videoRefs) ? result.videoRefs : []
+      videoRefs: Array.isArray(result.videoRefs) ? result.videoRefs : [],
+      textContent: typeof result.textContent === 'string' ? result.textContent : ''
     };
   } catch (_) {
-    return { images: [], videoRefs: [] };
+    return { images: [], videoRefs: [], textContent: '' };
   } finally {
     if (tabId) {
       try { await new Promise((resolve) => chrome.tabs.remove(tabId, resolve)); } catch (_) {}
@@ -487,6 +497,7 @@ async function handleZhihuParseMedia(url, sendResponse) {
     const pageResult = await extractMediaViaPageApi(parsed, String(url || ''));
     let images = pageResult.images;
     let videoRefs = pageResult.videoRefs;
+    let textContent = pageResult.textContent || '';
 
     // 如果页面通道失败（被拦截/超时），降级用 service worker 直接调 API
     if (images.length === 0) {
@@ -503,8 +514,8 @@ async function handleZhihuParseMedia(url, sendResponse) {
       if (detail) videos.push(detail);
     }
 
-    if (images.length === 0 && videos.length === 0) {
-      sendResponse({ type: 'ZHIHU_PARSE_RESULT', success: false, error: '该页面未找到图片或视频资源' });
+    if (images.length === 0 && videos.length === 0 && !textContent) {
+      sendResponse({ type: 'ZHIHU_PARSE_RESULT', success: false, error: '该页面未找到图片、视频或文本内容' });
       return;
     }
 
@@ -513,7 +524,8 @@ async function handleZhihuParseMedia(url, sendResponse) {
       success: true,
       data: {
         images,
-        videos
+        videos,
+        textContent
       }
     });
   } catch (err) {
